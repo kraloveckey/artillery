@@ -2,3 +2,4 @@
 * text
 *.py text
 *.sh text
+*.png binary
