@@ -1,0 +1,19 @@
+[Unit]
+Description=Artillery Security Suite
+After=network.target syslog.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/var/artillery
+ExecStart=/usr/bin/python3 /var/artillery/artillery.py
+Restart=always
+RestartSec=5
+KillMode=process
+KillSignal=SIGTERM
+StandardOutput=syslog
+StandardError=syslog
+SyslogIdentifier=artillery
+
+[Install]
+WantedBy=multi-user.target

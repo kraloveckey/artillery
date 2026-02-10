@@ -1,86 +1,119 @@
-#!/usr/bin/python
+#!/usr/bin/env python3
 #
-# eventual home for checking some base files for security configurations
+# src/harden.py
 #
 import re
 import os
-from src.core import *
+import threading
+import subprocess
+import sys
 
-# flag warnings, base is nothing
-warning = ""
+# Dynamic path setup
+current_dir = os.path.dirname(os.path.abspath(__file__))
+project_root = os.path.dirname(current_dir)
+if project_root not in sys.path:
+    sys.path.insert(0, project_root)
 
+try:
+    from src.core import *
+    import src.globals as globals
+except ImportError:
+    pass
+
+def check_file_perms(path, max_perm_octal):
+    """ Checks if file permissions exceed the recommended octal limit """
+    if os.path.exists(path):
+        try:
+            # Extract only the last 3 octal digits
+            mode = os.stat(path).st_mode & 0o777
+            if mode > max_perm_octal:
+                return f"[!] Insecure permissions on {path}: {mode:o} (Recommended: <= {max_perm_octal:o})\n"
+        except: pass
+    return ""
+
+def check_hardening():
+    """ Main hardening audit logic """
+    if not is_config_enabled("SYSTEM_HARDENING"): return
+    
+    # Wait a moment for Artillery startup to finish (avoiding firewall false positives)
+    time.sleep(5)
+    warning = ""
+    
+    # SSH configuration audit
+    sshd_config = "/etc/ssh/sshd_config"
+    if os.path.isfile(sshd_config):
+        try:
+            with open(sshd_config, "r", errors='ignore') as f:
+                data = f.read()
+            
+            # Use regex to find active (uncommented) insecure settings
+            if re.search(r"^\s*PermitRootLogin\s+yes", data, re.MULTILINE | re.IGNORECASE):
+                warning += "[!] SSH: Root login is enabled. Recommend: 'no' or 'prohibit-password'.\n"
+            
+            if re.search(r"^\s*PasswordAuthentication\s+yes", data, re.MULTILINE | re.IGNORECASE):
+                warning += "[!] SSH: Password authentication is enabled. Recommend: Use SSH keys.\n"
+            
+            if re.search(r"^\s*Port\s+22(\s|$)", data, re.MULTILINE) and is_config_enabled("SSH_DEFAULT_PORT_CHECK"):
+                warning += "[!] SSH: Running on default port 22. Consider changing for security-by-obscurity.\n"
+        except: pass
+
+    # Critical system file permissions
+    # /etc/shadow should be strictly root:root 600 or 640
+    warning += check_file_perms("/etc/shadow", 0o640)
+    warning += check_file_perms("/etc/passwd", 0o644)
+    warning += check_file_perms("/etc/ssh/sshd_config", 0o600)
+    
+    # Audit Artillery's own config permissions (from globals)
+    if hasattr(globals, 'g_configfile'):
+        warning += check_file_perms(globals.g_configfile, 0o600)
+
+    # Check for null/empty passwords in shadow
+    try:
+        with open("/etc/shadow", "r", errors='ignore') as f:
+            for line in f:
+                parts = line.split(":")
+                # Second field is the password hash
+                if len(parts) > 1 and (parts[1] == "" or parts[1] == "::"):
+                    warning += f"[!!!] CRITICAL: User '{parts[0]}' has NO PASSWORD set!\n"
+    except: pass
+
+    # Web directory security check
+    web_root = "/var/www"
+    if os.path.isdir(web_root):
+        for root, dirs, files in os.walk(web_root):
+            for d in dirs:
+                path = os.path.join(root, d)
+                try:
+                    # Bitwise check for 'Other' Write (002) permission
+                    if os.stat(path).st_mode & 0o002: 
+                        warning += f"[!] Potential Risk: Web directory is world-writable: {path}\n"
+                except: pass
+
+    # Basic firewall integrity check
+    try:
+        rules = subprocess.check_output("iptables -L -n", shell=True).decode()
+        # Check if the policy is wide open and no rules are present
+        if "policy ACCEPT" in rules and "ARTILLERY" not in rules:
+             warning += "[!] Firewall: No Artillery rules detected in iptables. Check service health.\n"
+    except: pass
+
+    # Report findings
+    if warning:
+        subject = "Security Hardening Audit Report"
+        # Mirror to syslog/journald so logs and notifications never diverge
+        try:
+            for line in warning.strip().splitlines():
+                if line.strip():
+                    write_log(line.strip(), 2)
+        except:
+            pass
+        # Alert the administrator
+        warn_the_good_guys(subject, warning)
+    else:
+        write_console("System hardening audit completed: No issues found.")
+
+# Execute as a background thread on startup
 if is_posix():
-    #
-    # check ssh config
-    #
-    if os.path.isfile("/etc/ssh/sshd_config"):
-        fileopen = open("/etc/ssh/sshd_config", "r")
-        data = fileopen.read()
-        if is_config_enabled("ROOT_CHECK"):
-            match = re.search("RootLogin yes", data)
-            # if we permit root logins trigger alert
-            if match:
-                # trigger warning if match
-                warning = warning + \
-                    "[!] Issue identified: /etc/ssh/sshd_config allows RootLogin. An attacker can gain root access to the system if password is guessed. Recommendation: Change RootLogin yes to RootLogin no\n\r\n\r"
-        match = re.search(r"Port 22\b", data)
-        if match:
-            if is_config_enabled("SSH_DEFAULT_PORT_CHECK"):
-                # trigger warning if match
-                warning = warning + "[!] Issue identified: /etc/ssh/sshd_config. SSH is running on the default port 22. An attacker commonly scans for these type of ports. Recommendation: Change the port to something high that doesn't get picked up by typical port scanners.\n\r\n\r"
-
-        # add SSH detection for password auth
-        match = re.search("PasswordAuthentication yes", data)
-        # if password authentication is used
-        if match:
-            warning = warning + \
-                "[!] Issue identified: Password authentication enabled. An attacker may be able to brute force weak passwords.\n\r\n\r"
-            match = re.search("Protocol 1|Protocol 2,1", data)
-        #
-        if match:
-            # triggered
-            warning = warning + \
-                "[!] Issue identified: SSH Protocol 1 enabled which is potentially vulnerable to MiTM attacks. https://www.kb.cert.org/vuls/id/684820\n\r\n\r"
-
-    #
-    # check ftp config
-    #
-    if os.path.isfile("/etc/vsftpd.conf"):
-        fileopen = open("/etc/vsftpd.conf", "r")
-        data = fileopen.read()
-        match = re.search("anonymous_enable=YES", data)
-        if match:
-            # trigger warning if match
-            warning = warning + \
-                "[!] Issue identified: /etc/vsftpd.conf allows Anonymous login. An attacker can gain a foothold to the system with absolutel zero effort. Recommendation: Change anonymous_enable yes to anonymous_enable no\n\r\n\r"
-
-    #
-    # check /var/www permissions
-    #
-    if os.path.isdir("/var/www/"):
-        for path, subdirs, files in os.walk("/var/www/"):
-            for name in files:
-                trigger_warning = 0
-                filename = os.path.join(path, name)
-                if os.path.isfile(filename):
-                    # check permission
-                    check_perm = os.stat(filename)
-                    check_perm = str(check_perm)
-                    match = re.search("st_uid=0", check_perm)
-                    if not match:
-                        trigger_warning = 1
-                    match = re.search("st_gid=0", check_perm)
-                    if not match:
-                        trigger_warning = 1
-                    # if we trigger on vuln
-                    if trigger_warning == 1:
-                        warning = warning + \
-                            "Issue identified: %s permissions are not set to root. If an attacker compromises the system and is running under the Apache user account, could view these files. Recommendation: Change the permission of %s to root:root. Command: chown root:root %s\n\n" % (
-                                filename, filename, filename)
-
-    #
-    # if we had warnings then trigger alert
-    #
-    if len(warning) > 1:
-        subject = "[!] Insecure configuration detected on filesystem: "
-        warn_the_good_guys(subject, subject + warning)
+    t = threading.Thread(target=check_hardening)
+    t.daemon = True
+    t.start()

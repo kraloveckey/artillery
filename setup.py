@@ -1,228 +1,331 @@
-#!/usr/bin/python
+#!/usr/bin/env python3
 #
-# quick script for installing artillery
+# Installer for Artillery
 #
-
 import time
 import subprocess
-import re
 import os
 import shutil
-from src.core import *
 import sys
-import errno
 import argparse
-from src.pyuac import * # UAC Check Script found it here.https://gist.github.com/Preston-Landers/267391562bc96959eb41 all credit goes to him.
-try: input = raw_input
-except NameError: pass
+import random
+import select
 
-import src.globals
+# Add current path to find src modules during setup
+sys.path.append(os.getcwd())
 
-# Argument parse. Aimed to provide automatic deployment options
-interactive = True # Flag to select interactive install, typically prompting user to answer [y/n]
-parser = argparse.ArgumentParser(description='-y, optional non interactive install/uninstall with automatic \'yes\' selection. It must roon with root/admin privileges')
-parser.add_argument("-y", action='store_true')
+# Attempt to import core for initial configuration generation
+try: 
+    from src.core import check_config, init_globals, is_config_enabled
+    import src.globals
+    # The standard deployment path is /var/artillery
+    src.globals.g_apppath = "/var/artillery"
+except: 
+    pass
+
+def is_posix(): return os.name == "posix"
+
+# Argument Parser for non-interactive automation
+interactive = True 
+parser = argparse.ArgumentParser()
+parser.add_argument("-y", action='store_true', help="Non-interactive mode")
 args = parser.parse_args()
-if args.y: # Check if non-interactive install argument is provided using an apt parameter style, -y
-    print("Running in non interactive mode with automatic \'yes\' selection")
-    interactive = False;
+if args.y: interactive = False
 
-# Check to see if we are admin
-if is_windows():
-    if not isUserAdmin():
-        runAsAdmin()# will try to relaunch script as admin will prompt for user\pass and open in seperate window
-        sys.exit(1)
-    if isUserAdmin():
-        print('''
-Welcome to the Artillery installer. Artillery is a honeypot, file monitoring, and overall security tool used to protect your nix systems.
+# Artillery requires root privileges for iptables and socket binding
+if is_posix() and os.geteuid() != 0:
+    print("[!] You must be root to run this script!")
+    sys.exit(1)
 
-Written by: Dave Kennedy (ReL1K)
+print('''
+===========================================================
+   ARTILLERY SECURITY SUITE - INSTALLER MANAGER
+===========================================================
 ''')
-#create loop for install/uninstall not perfect but works saves answer for next step
-    if not os.path.isfile("C:\\Program Files (x86)\\Artillery\\artillery.py"):
-        if interactive:
-            answer = input("[*] Do you want to install Artillery [y/n]: ")
-        else:
-            answer = 'y'
-    #if above is false it must be installed so ask to uninstall
-    else:
-        if os.path.isfile("C:\\Program Files (x86)\\Artillery\\artillery.py") and interactive:
-            #print("[*] [*] If you would like to uninstall hit y then enter")
-            answer = input("[*] Artillery detected. Do you want to uninstall [y/n:] ")
-        else:
-            answer = 'y'
-        #put this here to create loop
-        if (answer.lower() in ["yes", "y"]) or not interactive:
-            answer = "uninstall"
 
-# Check to see if we are root
-if is_posix():
-    try:   # and delete folder
-        if os.path.isdir("/var/artillery_check_root"):
-            os.rmdir('/var/artillery_check_root')
-            #if not thow error and quit
-    except OSError as e:
-        if (e.errno == errno.EACCES or e.errno == errno.EPERM):
-            print ("You must be root to run this script!\r\n")
-        sys.exit(1)
-    print('''
-Welcome to the Artillery installer. Artillery is a honeypot, file monitoring, and overall security tool used to protect your nix systems.
+def ask_yes_no(question, default="y"):
+    """ Helper for interactive user prompts with input buffer clearing """
+    if not interactive: return True
 
-Written by: Dave Kennedy (ReL1K)
-''')
-#if we are root create loop for install/uninstall not perfect but works saves answer for next step
-    if not os.path.isfile("/etc/init.d/artillery"):
-        if interactive:
-            answer = input("Do you want to install Artillery and have it automatically run when you restart [y/n]: ")
-        else:
-            answer = 'y'
-    #if above is true it must be installed so ask to uninstall
-    else:
-        if os.path.isfile("/etc/init.d/artillery") and interactive:
-            answer = input("[*] Artillery detected. Do you want to uninstall [y/n:] ")
-        else:
-            answer = 'y'
-        #put this here to create loop
-        if (answer.lower() in ["yes", "y"]) or not interactive:
-            answer = "uninstall"
-
-if answer.lower() in ["yes", "y"]:
-    init_globals()
+    # Flush the input buffer to prevent "ghost" Enter presses from previous commands
     if is_posix():
-        #kill_artillery()
+        while select.select([sys.stdin], [], [], 0)[0]:
+            sys.stdin.read(1)
 
-        print("[*] Beginning installation. This should only take a moment.")
+    valid = {"yes": True, "y": True, "ye": True, "no": False, "n": False}
+    prompt = " [Y/n] " if default == "y" else " [y/N] "
+    
+    while True:
+        sys.stdout.write(question + prompt)
+        sys.stdout.flush()
+        choice = input().lower().strip()
+        if choice == "" and default is not None:
+            return valid[default]
+        elif choice in valid:
+            return valid[choice]
+        else:
+            sys.stdout.write("Please respond with 'yes' or 'no'.\n")
 
-        # if directories aren't there then create them
-        #make root check folder here. Only root should
-        #be able to create or delete this folder right?
-        # leave folder for future installs/uninstall?
-        if not os.path.isdir("/var/artillery_check_root"):
-            os.makedirs("/var/artillery_check_root")
-        if not os.path.isdir("/var/artillery/database"):
-            os.makedirs("/var/artillery/database")
-        if not os.path.isdir("/var/artillery/src/program_junk"):
-            os.makedirs("/var/artillery/src/program_junk")
+# Dependencies check
+def check_and_install_dependencies():
+    """ Installs required system binaries and Python libraries """
+    # Update package lists to ensure latest versions are found
+    print("[*] Updating package lists (apt-get update)...")
+    subprocess.call("apt-get update -y", shell=True)
 
-        # install to rc.local
-        print("[*] Adding artillery into startup through init scripts..")
-        if os.path.isdir("/etc/init.d"):
-            if not os.path.isfile("/etc/init.d/artillery"):
-                fileopen = open("src/startup_artillery", "r")
-                config = fileopen.read()
-                filewrite = open("/etc/init.d/artillery", "w")
-                filewrite.write(config)
-                filewrite.close()
-                print("[*] Triggering update-rc.d on artillery to automatic start...")
-                subprocess.Popen(
-                    "chmod +x /etc/init.d/artillery", shell=True).wait()
-                subprocess.Popen(
-                    "update-rc.d artillery defaults", shell=True).wait()
-
-            # remove old method if installed previously
-            if os.path.isfile("/etc/init.d/rc.local"):
-                fileopen = open("/etc/init.d/rc.local", "r")
-                data = fileopen.read()
-                data = data.replace(
-                    "sudo python /var/artillery/artillery.py &", "")
-                filewrite = open("/etc/init.d/rc.local", "w")
-                filewrite.write(data)
-                filewrite.close()
-    #Changed order of cmds. was giving error about file already exists.
-    #also updated location to be the same accross all versions of Windows
-    if is_windows():
-        program_files = os.environ["PROGRAMFILES(X86)"]
-        install_path = os.getcwd()
-        shutil.copytree(install_path, program_files + "\\Artillery\\")
-        os.makedirs(program_files + "\\Artillery\\logs")
-        os.makedirs(program_files + "\\Artillery\\database")
-        os.makedirs(program_files + "\\Artillery\\src\\program_junk")
-
-
+    to_install = ["zip", "ipset", "openssl"]
+    
     if is_posix():
-        if interactive:
-            choice = input("[*] Do you want to keep Artillery updated? (requires internet) [y/n]: ")
-        else:
-            choice = 'y'
-        if choice in ["y", "yes"]:
-            print("[*] Checking out Artillery through github to /var/artillery")
-            # if old files are there
-            if os.path.isdir("/var/artillery/"):
-                shutil.rmtree('/var/artillery')
-            subprocess.Popen(
-                "git clone https://github.com/binarydefense/artillery /var/artillery/", shell=True).wait()
-            print("[*] Finished. If you want to update Artillery go to /var/artillery and type 'git pull'")
-        else:
-            print("[*] Copying setup files over...")
-            subprocess.Popen("cp -rf * /var/artillery/", shell=True).wait()
+        # Added pre-compiled python3-paramiko to prevent pip build hangs
+        to_install.extend(["python3-dev", "build-essential", "libssl-dev", "libffi-dev", "python3-paramiko"])
 
-        # if os is Mac Os X than create a .plist daemon - changes added by
-        # contributor - Giulio Bortot
-        if os.path.isdir("/Library/LaunchDaemons"):
-            # check if file is already in place
-            if not os.path.isfile("/Library/LaunchDaemons/com.artillery.plist"):
-                print("[*] Creating com.artillery.plist in your Daemons directory")
-                filewrite = open(
-                    "/Library/LaunchDaemons/com.artillery.plist", "w")
-                filewrite.write('<?xml version="1.0" encoding="UTF-8"?>\n<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">\n<plist version="1.0">\n<dict>\n<key>Disabled</key>\n<false/>\n<key>ProgramArguments</key>\n<array>\n<string>/usr/bin/python</string>\n<string>/var/artillery/artillery.py</string>\n</array>\n<key>KeepAlive</key>\n<true/>\n<key>RunAtLoad</key>\n<true/>\n<key>Label</key>\n<string>com.artillery</string>\n<key>Debug</key>\n<true/>\n</dict>\n</plist>')
-                print("[*] Adding right permissions")
-                subprocess.Popen(
-                    "chown root:wheel /Library/LaunchDaemons/com.artillery.plist", shell=True).wait()
+    print(f"[*] Installing system dependencies: {', '.join(to_install)}...")
+    packages = " ".join(to_install)
+    # Visible install (no -qq) to monitor progress and handle potential apt locks
+    subprocess.call(f"apt-get install -y {packages}", shell=True)
 
-    check_config()
+    # Double-check for paramiko availability in Python environment
+    try:
+        import paramiko
+        print("[+] Paramiko dependency found.")
+    except ImportError:
+        print("[*] Paramiko not found via apt, attempting pip install fallback...")
+        subprocess.call([sys.executable, "-m", "pip", "install", "paramiko"], stdout=subprocess.DEVNULL)
+
+# Prometheus exporter setup
+def setup_prometheus_exporter():
+    """ Configures prometheus-node-exporter to read Artillery metrics via textfile collector """
+    if is_config_enabled("METRICS"):
+        print("[*] Metrics are ENABLED. Configuring prometheus-node-exporter...")
+        
+        if shutil.which("prometheus-node-exporter") is None:
+            print("[*] Installing prometheus-node-exporter...")
+            subprocess.call("apt-get install -y prometheus-node-exporter", shell=True)
+
+        config_path = "/etc/default/prometheus-node-exporter"
+        metrics_dir = "/var/artillery/metrics"
+        
+        if not os.path.exists(metrics_dir):
+            os.makedirs(metrics_dir)
+
+        metric_args = f'--collector.textfile.directory="{metrics_dir}"'
+        
+        try:
+            if os.path.exists(config_path):
+                with open(config_path, "r") as f:
+                    content = f.read()
+                
+                if "collector.textfile.directory" not in content:
+                    if 'ARGS="' in content:
+                        new_content = content.replace('ARGS="', f'ARGS="{metric_args} ')
+                    else:
+                        new_content = content + f'\nARGS="{metric_args}"\n'
+                    
+                    with open(config_path, "w") as f:
+                        f.write(new_content)
+                    
+                    print(f"[+] Updated {config_path} with Artillery metrics path.")
+                    subprocess.call("systemctl restart prometheus-node-exporter", shell=True)
+            else:
+                print("[!] Warning: Could not find node-exporter config. Please set collector path manually.")
+        except Exception as e:
+            print(f"[!] Error configuring Prometheus exporter: {e}")
+
+# Stealth SSL cert generator
+def generate_ssl_certs(target_os="LINUX"):
+    """ Generates a self-signed certificate with a deceptive Subject Name """
+    ssl_dir = "/var/artillery/ssl"
+    if not os.path.isdir(ssl_dir): os.makedirs(ssl_dir)
+
+    cert_path = os.path.join(ssl_dir, "cert.pem")
+    key_path = os.path.join(ssl_dir, "key.pem")
+    
+    if os.path.exists(cert_path): os.remove(cert_path)
+    if os.path.exists(key_path): os.remove(key_path)
+
+    print(f"[*] Generating Stealth SSL Certificate in {ssl_dir}...")
+    
+    if target_os == "WINDOWS":
+        masks = [
+            "/C=US/ST=Washington/L=Redmond/O=Microsoft Corporation/OU=IIS Development/CN=WIN-IIS-SRV01",
+            "/C=US/ST=New York/L=New York/O=Enterprise Corp/OU=Exchange/CN=mail.corp.local",
+            "/C=GB/ST=London/L=London/O=Internal/OU=Domain Controllers/CN=DC01-AUTH",
+        ]
+    else:
+        masks = [
+            "/C=US/ST=California/L=San Jose/O=Cisco Systems/OU=Security/CN=vpn-concentrator",
+            "/C=TW/ST=Taipei/L=Taipei/O=Synology Inc./CN=DiskStation-Manager",
+            "/C=DE/ST=Berlin/L=Berlin/O=DevOps Team/OU=CI-CD/CN=gitlab.internal",
+        ]
+    
+    subj = random.choice(masks)
+    print(f"    -> Applying Contextual Mask: {subj.split('CN=')[1]}")
+
+    cmd = (
+        f"openssl req -new -newkey rsa:2048 -days 3650 -nodes -x509 "
+        f"-keyout {key_path} -out {cert_path} "
+        f"-subj '{subj}' "
+        f">/dev/null 2>&1"
+    )
+    subprocess.call(cmd, shell=True)
+    os.chmod(key_path, 0o600)
+
+# Honeyfiles (zip-bombs) generator
+def generate_honeyfiles():
+    """ Creates bait files designed to crash aggressive scanners """
+    honey_dir = "/var/artillery/honeyfiles"
+    if not os.path.isdir(honey_dir): os.makedirs(honey_dir)
+
+    traps = ["backup.zip", "env.zip", "database.zip"]
+    missing = any(not os.path.exists(f"{honey_dir}/{t}") for t in traps)
+            
+    if not missing:
+        print("[*] Honeyfiles already exist. Skipping generation.")
+        return
+
+    print("[*] Generating Honeyfiles (ZIP Bombs)...")
+    try:
+        payload_path = "/tmp/artillery_payload"
+        # Create a 1GB null-byte file as base for zip bombs
+        subprocess.call(f"dd if=/dev/zero of={payload_path} bs=1M count=1024 status=none", shell=True)
+        
+        for trap in traps:
+            bait_name = f"/tmp/{trap}.tmp"
+            os.rename(payload_path, bait_name) if os.path.exists(payload_path) else shutil.copy(bait_name, bait_name)
+            subprocess.call(f"zip -j -9 {honey_dir}/{trap} {bait_name}", shell=True, stdout=subprocess.DEVNULL)
+            if trap != traps[-1]:
+                subprocess.call(f"dd if=/dev/zero of={payload_path} bs=1M count=1024 status=none", shell=True)
+
+        print("[+] Honeyfiles generated successfully.")
+    except Exception as e:
+        print(f"[!] Error generating honeyfiles: {e}")
+
+# System tuning
+def apply_tuning(target_os="LINUX"):
+    """ Modifies kernel parameters for better stealth and TTL spoofing """
+    print(f"[*] Applying System Tuning (Target: {target_os})...")
+    ttl_val = "128" if target_os == "WINDOWS" else "64"
+    sysctl_content = f"net.ipv4.ip_default_ttl = {ttl_val}\nnet.ipv4.conf.all.rp_filter=0\nnet.ipv4.ip_forward=1\nnet.ipv4.tcp_syncookies=1\n"
+    try:
+        with open("/etc/sysctl.d/99-artillery.conf", "w") as f: f.write(sysctl_content)
+        subprocess.call("sysctl --system", shell=True, stdout=subprocess.DEVNULL)
+    except: pass
+
+# Uninstall
+def uninstall_artillery():
+    """ Clean removal of Artillery suite """
+    print("\n[*] Uninstalling Artillery...")
+    try:
+        subprocess.call("systemctl stop artillery", shell=True, stderr=subprocess.DEVNULL)
+        subprocess.call("systemctl disable artillery", shell=True, stderr=subprocess.DEVNULL)
+    except: pass
+
+    files = ["/etc/systemd/system/artillery.service", "/etc/init.d/artillery", 
+             "/etc/logrotate.d/artillery", "/etc/sysctl.d/99-artillery.conf", 
+             "/etc/security/limits.d/artillery.conf"]
+    for f in files:
+        if os.path.exists(f): os.remove(f)
+
+    subprocess.call("systemctl daemon-reload", shell=True, stderr=subprocess.DEVNULL)
+    if os.path.exists("/var/artillery"): shutil.rmtree("/var/artillery")
+    print("[*] Uninstallation complete.\n")
+
+# Main execution
+ACTION = None
+is_installed = os.path.isdir("/var/artillery")
+
+if interactive:
+    if is_installed:
+        print("[!] Artillery is ALREADY installed.\n    1) Update / Reconfigure\n    2) Uninstall\n    3) Exit")
+        while True:
+            c = input("\nSelect [1]: ").strip()
+            if c=="" or c=="1": ACTION="UPDATE"; break
+            elif c=="2": ACTION="UNINSTALL"; break
+            elif c=="3": sys.exit(0)
+    else:
+        print("[?] Artillery is NOT installed.\n    1) Install Artillery\n    2) Exit")
+        while True:
+            c = input("\nSelect [1]: ").strip()
+            if c=="" or c=="1": ACTION="INSTALL"; break
+            elif c=="2": sys.exit(0)
+else:
+    ACTION = "UPDATE" if is_installed else "INSTALL"
+
+if ACTION == "UNINSTALL":
+    uninstall_artillery()
+    sys.exit(0)
+
+if ACTION == "INSTALL" or ACTION == "UPDATE":
+    target_os = "LINUX"
     if interactive:
-        choice = input("[*] Would you like to start Artillery now? [y/n]: ")
-    else:
-        choice = 'y'
-    if choice in ["yes", "y"]:
-        if is_posix():
-            # this cmd is what they were refering to as "no longer supported"? from update-rc.d on install.
-            # It looks like service starts but you have to manually launch artillery
-            subprocess.Popen("/etc/init.d/artillery start", shell=True).wait()
-            print("[*] Installation complete. Edit /var/artillery/config in order to config artillery to your liking")
-        #added to start after install.launches in seperate window
-        if is_windows():
-            os.chdir("src\windows")
-            #copy over banlist
-            os.system("start cmd /K banlist.bat")
-            #Wait to make sure banlist is copied over
-            time.sleep(2)
-            #launch from install dir
-            os.system("start cmd /K launch.bat")
-            #cleanup cache folder
-            time.sleep(2)
-            os.system("start cmd /K del_cache.bat")
+        print("\n--- OS EMULATION SETUP ---")
+        print("1) Linux   (Default)\n2) Windows")
+        while True:
+            c = input("Select [1]: ").strip()
+            if c == "" or c == "1": target_os = "LINUX"; break
+            elif c == "2": target_os = "WINDOWS"; break
 
+    print(f"\n[*] Starting {ACTION} process...")
+    
+    dirs = ["/var/artillery", "/var/artillery/database", "/var/artillery/src",
+            "/var/artillery/logs", "/var/artillery/metrics", "/var/artillery/ssl",
+            "/var/artillery/honeyfiles"]
+    for d in dirs:
+        if not os.path.isdir(d): os.makedirs(d)
 
-#added root check to uninstall for linux
-if answer == "uninstall":
-    if is_posix():
-        try:   #check if the user is root
-            if os.path.isdir("/var/artillery_check_root"):
-                os.rmdir('/var/artillery_check_root')
-               #if not throw an error and quit
-        except OSError as e:
-            if (e.errno == errno.EACCES or e.errno == errno.EPERM):
-                print ("[*] You must be root to run this script!\r\n")
-            sys.exit(1)
-        else:# remove all of artillery
-            os.remove("/etc/init.d/artillery")
-            subprocess.Popen("rm -rf /var/artillery", shell=True)
-            subprocess.Popen("rm -rf /etc/init.d/artillery", shell=True)
-            #added to remove service files on kali2
-            #subprocess.Popen("rm /lib/systemd/system/artillery.service", shell=True)
-            #kill_artillery()
-            print("[*] Artillery has been uninstalled. Manually kill the process if it is still running.")
-    #Delete routine to remove artillery on windows.added uac check
-    if is_windows():
-        if not isUserAdmin():
-            runAsAdmin()
-        if isUserAdmin():
-            #remove program files
-            subprocess.call(['cmd', '/C', 'rmdir', '/S', '/Q', 'C:\\Program Files (x86)\\Artillery'])
-            #del uninstall cache
-            os.chdir("src\windows")
-            os.system("start cmd /K del_cache.bat")
-            #just so they can see this message slleep a sec
-            print("[*] Artillery has been uninstalled.\n[*] Manually kill the process if it is still running.")
-            time.sleep(3)
+    print("[*] Copying program files...")
+    subprocess.Popen("cp -rf * /var/artillery/", shell=True).wait()
+    
+    if os.path.isdir(".git"):
+        print("[*] Copying .git repository...")
+        dest_git = "/var/artillery/.git"
+        if os.path.exists(dest_git): shutil.rmtree(dest_git)
+        try: shutil.copytree(".git", dest_git)
+        except: pass
+
+    check_and_install_dependencies()
+    generate_ssl_certs(target_os)
+
+    # Logrotate configuration
+    with open("/etc/logrotate.d/artillery", "w") as f:
+        f.write("/var/artillery/logs/*.log {\n  daily\n  rotate 14\n  compress\n  missingok\n  notifempty\n  copytruncate\n}\n")
+    os.chmod("/etc/logrotate.d/artillery", 0o644)
+
+    # Systemd service setup
+    if os.path.exists("src/artillery.service"):
+        shutil.copy("src/artillery.service", "/etc/systemd/system/artillery.service")
+        subprocess.Popen("systemctl daemon-reload", shell=True).wait()
+        subprocess.Popen("systemctl enable artillery", shell=True).wait()
+
+    apply_tuning(target_os)
+    generate_honeyfiles()
+
+    print("[*] Generating Configuration...")
+    try:
+        init_globals() 
+        check_config() 
+        setup_prometheus_exporter() 
+        
+        conf_path = "/var/artillery/config"
+        if os.path.exists(conf_path):
+            with open(conf_path, "r") as f: lines = f.readlines()
+            with open(conf_path, "w") as f:
+                for line in lines:
+                    if "OS_EMULATION=" in line: f.write(f'OS_EMULATION="{target_os}"\n')
+                    else: f.write(line)
+            os.chmod(conf_path, 0o600)
+    except: pass
+
+    # Apply global permission policy
+    subprocess.call("find /var/artillery -type d -exec chmod 700 {} +", shell=True)
+    subprocess.call("find /var/artillery -type f -exec chmod 600 {} +", shell=True)
+    if os.path.exists("/var/artillery/metrics"):
+        subprocess.call("chmod 755 /var/artillery/metrics", shell=True)
+        subprocess.call("find /var/artillery/metrics -type f -name '*.prom' -exec chmod 644 {} +", shell=True)
+
+    print(f"\n {ACTION} Complete!")
+    
+    # Clears buffer then asks for restart
+    if ask_yes_no("[?] Restart Artillery Service now?"):
+        subprocess.Popen("systemctl restart artillery", shell=True).wait()
+        print("[*] Service restarted.")
