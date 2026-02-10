@@ -1,6 +1,6 @@
 <h1 align="center">Artillery Honeypot</h1>
 <p align="center">
-  <img src=".assets/logo0.png" alt="Artillery Logo" width="200">
+  <img src=".assets/logo.png" alt="Artillery Logo" width="200">
 </p>
 
 ---
