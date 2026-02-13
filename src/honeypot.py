@@ -489,11 +489,11 @@ class SocketListener(socketserver.BaseRequestHandler):
             # Fallback to Aggregator and Deceptive Banners
             metrics.record_attack(port, iface, "tcp")
             
-            try:
-                self.request.sendall(banner)
-            except Exception as e:
-                write_log(f"banner sendall failed on port {port}: {e}", 2)
-                return
+            #try:
+            #    self.request.sendall(banner)
+            #except Exception as e:
+            #    write_log(f"banner sendall failed on port {port}: {e}", 2)
+            #    return
             
             try:
                 self.request.settimeout(1.5)
