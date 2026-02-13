@@ -124,7 +124,7 @@ def check_config():
     configdefaults["METRICS"] = ["ON", "SEND PROMETHEUS METRICS (ON/OFF)"]
     configdefaults["BIND_INTERFACE"] = ["", "BIND IP(s) (EMPTY=ALL)"]
     configdefaults["TCPPORTS"] = ["21,22,23,25,80,110,111,135,139,389,443,445,631,636,993,995,1433,1723,2049,2082,2083,2086,2087,2222,2483,2484,3128,3306,3389,4444,5000,5432,5601,5900,5985,6379,7001,7002,8000,8008,8080,8081,8443,8888,9000,9200,9300,10000,11211,27017", "OPEN TCP PORTS"]
-    configdefaults["UDPPORTS"] = ["69,123,161,1900,3478,3702,5060,5061", "OPEN UDP PORTS"]
+    configdefaults["UDPPORTS"] = ["69,161,3478,3702,5060,5061", "OPEN UDP PORTS"]
     configdefaults["HONEYPOT_AGGREGATE_INTERVAL"] = ["60", "HONEYPOT EVENT AGGREGATION WINDOW (SEC)"]
     configdefaults["DYNAMIC_FINGERPRINT"] = ["ON", "DYNAMICALLY CHANGE SERVER BANNERS (ON/OFF)"]
     configdefaults["FINGERPRINT_TTL"] = ["86400", "FINGERPRINT PROFILE TTL (SEC)"]
@@ -203,7 +203,7 @@ def config_exists(param):
     try:
         with open(globals.g_configfile, "r") as f:
             for line in f:
-                if not line.startswith("#") and re.search(param + "=", line): return True
+                if not line.startswith("#") and re.search(r"^" + param + r"\s*=", line): return True
     except: return False
     return False
 
@@ -212,7 +212,7 @@ def read_config(param):
     try:
         with open(globals.g_configfile, "r") as f:
             for line in f:
-                if not line.startswith("#") and re.search(param + "=", line):
+                if not line.startswith("#") and re.search(r"^" + param + r"\s*=", line):
                     return line.split("=", 1)[1].strip().replace('"', "")
     except: return ""
     return ""
